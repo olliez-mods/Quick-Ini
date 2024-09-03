@@ -1,4 +1,5 @@
 from urllib.parse import urlparse
+from typing import Type, Any
 
 parsed_ini:dict[str,str|int|bool|float|None] = {}
 error_message:str = ""
@@ -34,7 +35,7 @@ def get_last_error() -> str:
     """
     return error_message
 
-def load_file(file_location:str, auto_type_convert:bool = True, empty_default = None) -> bool:
+def load_file(file_location:str, auto_type_convert:bool = True, empty_default:Any = None) -> bool:
     """
     Load a ini style file from the file system or from a URL.
     \nUse get_value() or get_all() to access.
@@ -85,17 +86,23 @@ def load_file(file_location:str, auto_type_convert:bool = True, empty_default = 
         parsed_ini[left] = right
     return True
     
-def get_value(name:str, default = None):
+def get_value(name:str, default:Any = None, expected_type:Type = None):
     """
     Returns the value attached to the given name.
     \nIf no setting is found, it will return the passed in default
     Args:
         name (str): The name of the setting
         default (Any): What will be returned if nothing is found
+        expected_type (Type): Will make sure the returned object is of this Type, otherwise Raise()
     Return:
         Any: The value associated with the name
     Example:
         >>> get_value("do_debug_logs", False)
         True
     """
-    return parsed_ini.get(name, default)
+    value:Any = parsed_ini.get(name, default)
+    if(expected_type != None):
+        if(not isinstance(value, expected_type)):
+            error = f"Expected type '{expected_type.__name__}', instead got '{type(value).__name__}'"
+            raise(ValueError(error))
+    return value
