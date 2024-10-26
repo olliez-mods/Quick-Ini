@@ -1,1 +1,1 @@
-from .quick_ini import get_last_error, load_file, get_value
+from .quick_ini import get_last_error, load_file, get_value, write_value
