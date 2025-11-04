@@ -79,6 +79,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Notify Release Start
+        run: |
+          curl -H "Title: 🚀 Release Started" \
+               -H "Tags: rocket" \
+               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+               ${{ vars.NTFY_URL }}
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -123,6 +130,7 @@ jobs:
           cat release_notes.md
 
       - name: Create GitHub Release
+        id: create-release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,3 +145,20 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Notify Release Success
+        if: success()
+        run: |
+          curl -H "Title: ✅ Released" \
+               -H "Tags: white_check_mark" \
+               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+               ${{ vars.NTFY_URL }}
+
+      - name: Notify Release Failure
+        if: failure()
+        run: |
+          curl -H "Title: ❌ Release Failed" \
+               -H "Tags: x" \
+               -H "Priority: high" \
+               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+               ${{ vars.NTFY_URL }}
