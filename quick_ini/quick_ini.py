@@ -1,13 +1,13 @@
 from urllib.parse import urlparse
-from typing import Type, Any
+from typing import Type, Any, Union, Dict, Optional
 import os
 
 class QuickIni:
-    parsed_ini:dict[str,str|int|bool|float|None] = {}
-    loaded_file_path:str=None
-    auto_type_convert_g:bool=True
-    error_message:str = ""
-    web_file:str = None
+    parsed_ini: Dict[str, Union[str, int, bool, float, None]] = {}
+    loaded_file_path: Optional[str] = None
+    auto_type_convert_g: bool = True
+    error_message: str = ""
+    web_file: Optional[str] = None
 
     @staticmethod
     def grab_from_url(url:str) -> bool:
