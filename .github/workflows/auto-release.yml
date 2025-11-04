@@ -125,8 +125,6 @@ jobs:
           \`\`\`bash
           pip install quick_ini==${VERSION}
           \`\`\`
-
-          **Full Changelog**: https://github.com/olliez-mods/Quick-Ini/compare/${LAST_TAG:-$(git rev-list --max-parents=0 HEAD)}...v${VERSION}
           EOF
 
           echo "Generated release notes:"
