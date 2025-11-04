@@ -79,6 +79,39 @@ parts=
         value = QuickIni.get_value("new_key")
         self.assertEqual(value, "new_value")
         
+    def test_get_array_value(self):
+        """Test getting array values."""
+        QuickIni.load_file(self.temp_file.name)
+        parts = QuickIni.get_value("parts")
+        self.assertEqual(parts, ["one", "two", "three"])
+        self.assertIsInstance(parts, list)
+        
+    def test_write_array_value(self):
+        """Test writing array values to file."""
+        QuickIni.load_file(self.temp_file.name)
+        test_array = ["apple", "banana", "cherry"]
+        result = QuickIni.write_value("fruits", test_array, add_if_not_found=True)
+        self.assertEqual(result, test_array)
+        
+        # Verify it was written as an array
+        fruits = QuickIni.get_value("fruits")
+        self.assertEqual(fruits, test_array)
+        self.assertIsInstance(fruits, list)
+        
+    def test_array_type_conversion(self):
+        """Test type conversion in arrays."""
+        QuickIni.load_file(self.temp_file.name)
+        mixed_array = ["text", 42, 3.14, True]
+        QuickIni.write_value("mixed", mixed_array, add_if_not_found=True)
+        
+        # Reload to test parsing
+        QuickIni.load_file(self.temp_file.name)
+        mixed = QuickIni.get_value("mixed")
+        self.assertEqual(mixed[0], "text")
+        self.assertEqual(mixed[1], 42)
+        self.assertEqual(mixed[2], 3.14)
+        self.assertEqual(mixed[3], True)
+        
     def test_error_handling(self):
         """Test error handling for missing files."""
         result = QuickIni.load_file("nonexistent_file.ini")

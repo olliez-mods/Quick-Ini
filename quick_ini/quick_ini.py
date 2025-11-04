@@ -1,9 +1,9 @@
 from urllib.parse import urlparse
-from typing import Type, Any, Union, Dict, Optional
+from typing import Type, Any, Union, Dict, Optional, List
 import os
 
 class QuickIni:
-    parsed_ini: Dict[str, Union[str, int, bool, float, None]] = {}
+    parsed_ini: Dict[str, Union[str, int, bool, float, List, None]] = {}
     loaded_file_path: Optional[str] = None
     auto_type_convert_g: bool = True
     error_message: str = ""
@@ -101,15 +101,45 @@ class QuickIni:
                 return False
 
         lines = f_data.splitlines()
+        i = 0
 
-        for line in lines:
-            if(line.startswith("#") or "=" not in line): continue # Ignore comments and lines without "="
+        while i < len(lines):
+            line = lines[i]
+            
+            # Skip comments and lines without "="
+            if(line.startswith("#") or "=" not in line): 
+                i += 1
+                continue
+                
             left, right = line.split("=", 1)
-            if(not right): right = empty_default
-            elif(not auto_type_convert): pass # If we aren't auto converting, skip the conversion
-            else: right = QuickIni.string_to_type(right)
+            
+            # Check if this is an array (empty value and next line starts with |)
+            if not right.strip() and i + 1 < len(lines) and lines[i + 1].startswith("|"):
+                # This is an array, collect all array items
+                array_items = []
+                i += 1  # Move to the first array item
+                
+                while i < len(lines) and lines[i].startswith("|"):
+                    array_value = lines[i][1:]  # Remove the | prefix
+                    
+                    if auto_type_convert:
+                        array_value = QuickIni.string_to_type(array_value)
+                    
+                    array_items.append(array_value)
+                    i += 1
+                
+                QuickIni.parsed_ini[left] = array_items
+            else:
+                # Regular key-value pair
+                if(not right): 
+                    right = empty_default
+                elif(not auto_type_convert): 
+                    pass # If we aren't auto converting, skip the conversion
+                else: 
+                    right = QuickIni.string_to_type(right)
 
-            QuickIni.parsed_ini[left] = right
+                QuickIni.parsed_ini[left] = right
+                i += 1
 
         QuickIni.loaded_file_path=file_location
         return True
@@ -142,7 +172,7 @@ class QuickIni:
         
         Parameters:
         key (str): The key to update or add in the .ini file.
-        value (Any): The value to write, which will be converted to a string.
+        value (Any): The value to write, which will be converted to a string. If value is a list, it will be written as an array.
         add_if_not_found (bool): If True, adds the key-value pair if the key is not found in the file (default is False).
         update_localy (bool): If True, updates the parsed_ini dictionary locally with the new key-value pair (default is True).
         do_backup (bool): If True, creates a backup of the original file before making changes, and removes if successful.
@@ -159,18 +189,25 @@ class QuickIni:
         Example:
         >>> write_value("example_key", 42, add_if_not_found=True)
         42
+        >>> write_value("parts", ["one", "two", "three"], add_if_not_found=True)
+        ["one", "two", "three"]
         """
 
         if(not QuickIni.loaded_file_path):
             QuickIni.error_message = "No loaded file path, was a local file loaded?"
             raise(ValueError(QuickIni.error_message))
 
-        try: str(value)
-        except(TypeError, ValueError):
-            QuickIni.error_message = "Could not convert value to a string"
-            raise(ValueError(QuickIni.error_message))
-
-        key_value_pair = f"{str(key)}={str(value)}\n"
+        # Handle array values
+        if isinstance(value, list):
+            key_value_pair = f"{str(key)}=\n"
+            for item in value:
+                key_value_pair += f"|{str(item)}\n"
+        else:
+            try: str(value)
+            except(TypeError, ValueError):
+                QuickIni.error_message = "Could not convert value to a string"
+                raise(ValueError(QuickIni.error_message))
+            key_value_pair = f"{str(key)}={str(value)}\n"
 
         try:
             file = open(str(QuickIni.loaded_file_path), 'r', encoding='utf-8')
@@ -185,25 +222,37 @@ class QuickIni:
                 print("Backup created at", f"{str(QuickIni.loaded_file_path)}.backup")
 
             key_found=False
-            last_line=""
-            file = open(str(QuickIni.loaded_file_path), 'w')
-            for line in lines:
+            new_lines = []
+            i = 0
+            
+            while i < len(lines):
+                line = lines[i]
+                
                 if(not line.startswith("#") and not key_found and line.startswith(f"{key}=")):
-                    last_line = key_value_pair
+                    # Found the key, replace it and skip any existing array items
+                    new_lines.append(key_value_pair)
                     key_found = True
+                    i += 1
+                    
+                    # Skip existing array items if they exist
+                    while i < len(lines) and lines[i].startswith("|"):
+                        i += 1
                 else:
-                    last_line = line
-                file.write(last_line)
+                    new_lines.append(line)
+                    i += 1
 
             if(not key_found):
                 if(add_if_not_found):
-                    if(not last_line.endswith("\n")):
-                        file.write("\n")
-                    file.write(f"{key_value_pair}")
+                    if new_lines and not new_lines[-1].endswith("\n"):
+                        new_lines.append("\n")
+                    new_lines.append(key_value_pair)
                 else:
                     QuickIni.error_message = f"Could not find key '{key}'"
                     raise(ValueError(QuickIni.error_message))
 
+            # Write the modified content
+            file = open(str(QuickIni.loaded_file_path), 'w')
+            file.writelines(new_lines)
             file.close()
 
         except FileNotFoundError as e:
@@ -216,7 +265,12 @@ class QuickIni:
             QuickIni.error_message = f"IOError when reading or writting to the file '{QuickIni.loaded_file_path}'"
             raise(e)
 
-        v = QuickIni.string_to_type(str(value)) if QuickIni.auto_type_convert_g else str(value)
+        # Handle return value
+        if isinstance(value, list):
+            v = [QuickIni.string_to_type(str(item)) if QuickIni.auto_type_convert_g else str(item) for item in value]
+        else:
+            v = QuickIni.string_to_type(str(value)) if QuickIni.auto_type_convert_g else str(value)
+            
         if(update_locally):
             QuickIni.parsed_ini[str(key)] = v
 
