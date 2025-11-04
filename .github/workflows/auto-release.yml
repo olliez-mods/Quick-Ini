@@ -57,11 +57,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Notify Tests Started
+      - name: Notify Process Started
         if: matrix.python-version == '3.8' # Only notify once, not for each Python version
         run: |
-          curl -H "Title: 🧪 Tests Started" \
-               -H "Tags: test_tube" \
+          curl -H "Title: 🚀 Started" \
                -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
                ${{ vars.NTFY_URL }}
 
@@ -79,29 +78,6 @@ jobs:
         run: |
           python -m unittest discover tests
 
-  notify-test-result:
-    needs: [check-version, test]
-    if: always() && needs.check-version.outputs.version-changed == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Notify Tests Passed
-        if: needs.test.result == 'success'
-        run: |
-          curl -H "Title: ✅ Tests Passed" \
-               -H "Tags: white_check_mark" \
-               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-               ${{ vars.NTFY_URL }}
-
-      - name: Notify Tests Failed
-        if: needs.test.result == 'failure'
-        run: |
-          curl -H "Title: ❌ Tests Failed" \
-               -H "Tags: x" \
-               -H "Priority: high" \
-               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-               ${{ vars.NTFY_URL }}
-
   auto-release:
     needs: [check-version, test]
     if: needs.check-version.outputs.version-changed == 'true'
@@ -109,13 +85,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Notify Release Start
-        run: |
-          curl -H "Title: 🚀 Release Started" \
-               -H "Tags: rocket" \
-               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-               ${{ vars.NTFY_URL }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -177,19 +146,26 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
-      - name: Notify Release Success
-        if: success()
-        run: |
-          curl -H "Title: ✅ Released" \
-               -H "Tags: white_check_mark" \
-               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-               ${{ vars.NTFY_URL }}
+  notify-final-result:
+    needs: [check-version, test, auto-release]
+    if: always() && needs.check-version.outputs.version-changed == 'true'
+    runs-on: ubuntu-latest
 
-      - name: Notify Release Failure
-        if: failure()
+    steps:
+      - name: Notify Final Result
         run: |
-          curl -H "Title: ❌ Release Failed" \
-               -H "Tags: x" \
-               -H "Priority: high" \
-               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-               ${{ vars.NTFY_URL }}
+          if [ "${{ needs.test.result }}" = "failure" ]; then
+            curl -H "Title: ❌ Tests Failed" \
+                 -H "Priority: high" \
+                 -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+                 ${{ vars.NTFY_URL }}
+          elif [ "${{ needs.auto-release.result }}" = "failure" ]; then
+            curl -H "Title: ❌ Release Failed" \
+                 -H "Priority: high" \
+                 -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+                 ${{ vars.NTFY_URL }}
+          elif [ "${{ needs.auto-release.result }}" = "success" ]; then
+            curl -H "Title: ✅ Released" \
+                 -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+                 ${{ vars.NTFY_URL }}
+          fi
