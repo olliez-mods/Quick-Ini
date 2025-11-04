@@ -57,6 +57,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Notify Tests Started
+        if: matrix.python-version == '3.8' # Only notify once, not for each Python version
+        run: |
+          curl -H "Title: 🧪 Tests Started" \
+               -H "Tags: test_tube" \
+               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+               ${{ vars.NTFY_URL }}
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
@@ -70,6 +78,29 @@ jobs:
       - name: Run tests
         run: |
           python -m unittest discover tests
+
+  notify-test-result:
+    needs: [check-version, test]
+    if: always() && needs.check-version.outputs.version-changed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Tests Passed
+        if: needs.test.result == 'success'
+        run: |
+          curl -H "Title: ✅ Tests Passed" \
+               -H "Tags: white_check_mark" \
+               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+               ${{ vars.NTFY_URL }}
+
+      - name: Notify Tests Failed
+        if: needs.test.result == 'failure'
+        run: |
+          curl -H "Title: ❌ Tests Failed" \
+               -H "Tags: x" \
+               -H "Priority: high" \
+               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
+               ${{ vars.NTFY_URL }}
 
   auto-release:
     needs: [check-version, test]
