@@ -91,7 +91,8 @@ class QuickIni:
         # Otherwise assume it's a file path
         else:
             try:
-                f_data = open(str(file_location), 'r', encoding='utf-8').read()
+                with open(str(file_location), 'r', encoding='utf-8') as file:
+                    f_data = file.read()
             except FileNotFoundError:
                 QuickIni.error_message = f"Could not find file at: '{file_location}'"
                 return False
