@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="quick_ini",
-    version="3.1.2",
+    version="3.1.3",
     description="A library for reading from and writing to .ini formatted files",
     long_description=long_description,
     long_description_content_type="text/markdown",
