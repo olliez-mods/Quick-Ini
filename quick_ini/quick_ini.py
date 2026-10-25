@@ -16,6 +16,7 @@ class QuickIni:
     auto_type_convert_g: bool = True
     error_message: str = ""
     web_file: str | None = None
+    sync_report: dict[str, Any] | None = None
 
     @staticmethod
     def grab_from_url(url:str, timeout:float = 10) -> bool:
@@ -53,13 +54,27 @@ class QuickIni:
     @staticmethod
     def strip_comment(s:str) -> str:
         """
-        Removes an inline comment from a line. A "#" or ";" only starts a comment when it
-        follows whitespace, so values like "color=#fff" are kept intact.
+        Removes a comment from a line. Any "#" starts a comment, unless it is escaped
+        as "\\#", so values like "color=\\#fff" are kept intact.
         """
-        for i in range(1, len(s)):
-            if(s[i] in "#;" and s[i - 1].isspace()):
+        for i, c in enumerate(s):
+            if(c == "#" and (i == 0 or s[i - 1] != "\\")):
                 return s[:i]
         return s
+
+    @staticmethod
+    def unescape(s:str) -> str:
+        """
+        Turns "\\#" in a value back into "#". Other backslashes are left alone.
+        """
+        return s.replace("\\#", "#")
+
+    @staticmethod
+    def escape(s:str) -> str:
+        """
+        Escapes "#" in a value as "\\#", so it isn't read as a comment.
+        """
+        return s.replace("#", "\\#")
 
     @staticmethod
     def section_name(line:str) -> str | None:
@@ -93,7 +108,202 @@ class QuickIni:
         return s
 
     @staticmethod
-    def load_file(file_location:str, auto_type_convert:bool = True, empty_default:Any = None) -> bool:
+    def split_blocks(lines:list[str]) -> list[tuple[str | None, str | None, list[str]]]:
+        """
+        Splits lines into (key, section, lines) blocks. A key's block is its own line plus any "|" array lines,
+        keys in a section are given as "section.key". Every other line is its own block with a key of None.
+        """
+        blocks = []
+        current_section = None
+        i = 0
+
+        while i < len(lines):
+            stripped = lines[i].strip()
+            start = i
+            key = None
+            i += 1
+
+            if(not stripped.startswith("#")):
+                section = QuickIni.section_name(stripped)
+                if(section is not None):
+                    current_section = section
+                else:
+                    content = QuickIni.strip_comment(stripped)
+                    if("=" in content):
+                        left, right = content.split("=", 1)
+                        key = left.strip()
+                        if(current_section):
+                            key = f"{current_section}.{key}"
+                        if(not right.strip()):
+                            while i < len(lines) and lines[i].strip().startswith("|"):
+                                i += 1
+
+            blocks.append((key, current_section, lines[start:i]))
+        return blocks
+
+    @staticmethod
+    def atomic_write(path:str, text:str, mode_from:str) -> None:
+        """
+        Writes text to a temporary file next to path, then swaps it in, so the file is never left half written.
+        The new file gets the permissions of mode_from.
+        """
+        fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".quick_ini_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as file:
+                file.write(text)
+            shutil.copymode(mode_from, temp_path)
+            os.replace(temp_path, path)
+        except BaseException:
+            try: os.remove(temp_path)
+            except OSError: pass
+            raise
+
+    @staticmethod
+    def sync_template(file_location:str, template:bool | str = True) -> bool:
+        """
+        Brings a config file up to date with its template, keeping the values already set in the config.
+        \nThe template decides which keys exist, their order, sections and comments. Keys the config doesn't have yet get
+        the template's value, and keys the template doesn't have are kept at the end of their section.
+        If the config doesn't exist it is created from the template. The file is only written when something changed,
+        and the previous version is saved as "<config>.bak". Use get_sync_report() to see what changed.
+        Args:
+            file_location (str): The path of the config file.
+            template (bool | str): True to use "<config>.template", skipped quietly if it doesn't exist.
+                Or the path of the template file, which must exist.
+        Returns:
+            bool: True if successfull, False otherwise
+        Example:
+            >>> sync_template("config.ini")
+                True
+            >>> get_sync_report()["added"]
+                ['database.timeout']
+        """
+        QuickIni.sync_report = None
+        if(not template):
+            return True
+
+        file_location = str(file_location)
+        if(QuickIni.is_string_url(file_location)):
+            QuickIni.error_message = "Cannot sync a template into a file loaded from a URL"
+            return False
+
+        template_path = f"{file_location}.template" if template is True else str(template)
+        if(QuickIni.is_string_url(template_path)):
+            QuickIni.error_message = "Templates must be local files, not URLs"
+            return False
+
+        try:
+            with open(template_path, 'r', encoding='utf-8') as file:
+                template_lines = file.read().splitlines()
+        except FileNotFoundError:
+            # A missing "<config>.template" is fine, a template that was asked for by name isn't
+            if(template is True):
+                return True
+            QuickIni.error_message = f"Could not find template at: '{template_path}'"
+            return False
+        except IOError as e:
+            QuickIni.error_message = f"Error reading template: '{e}'"
+            return False
+
+        # Resolve symlinks so the real file gets replaced, not the link
+        path = os.path.realpath(file_location)
+        old_text = None
+        try:
+            with open(path, 'r', encoding='utf-8') as file:
+                old_text = file.read()
+        except FileNotFoundError:
+            pass
+        except IOError as e:
+            QuickIni.error_message = f"Error reading file: '{e}'"
+            return False
+
+        user_values = {}
+        user_sections = {}
+        if(old_text is not None):
+            for key, section, block in QuickIni.split_blocks(old_text.splitlines()):
+                if(key is not None):
+                    user_values[key] = block
+                    user_sections[key] = section
+
+        # Walk the template, swapping in the user's lines for every key they have set
+        new_lines = []
+        template_keys = set()
+        added = []
+        for key, _, block in QuickIni.split_blocks(template_lines):
+            if(key is None):
+                new_lines.extend(block)
+                continue
+            template_keys.add(key)
+            if(key in user_values):
+                new_lines.extend(user_values[key])
+            else:
+                new_lines.extend(block)
+                if(key not in added):
+                    added.append(key)
+
+        # Keep keys the template doesn't have, at the end of their own section
+        orphaned = [key for key in user_values if key not in template_keys]
+        sections = {}
+        for key in orphaned:
+            sections.setdefault(user_sections[key], []).extend(user_values[key])
+        for section, block in sections.items():
+            block = ["# Not in the template, kept from your config"] + block
+            insert_at = QuickIni.find_insert_index(new_lines, section)
+            if(insert_at is None):
+                if(new_lines and new_lines[-1].strip()):
+                    new_lines.append("")
+                new_lines.append(f"[{section}]")
+                new_lines.extend(block)
+                continue
+            if(insert_at > 0 and new_lines[insert_at - 1].strip()):
+                block = [""] + block
+            if(insert_at < len(new_lines) and new_lines[insert_at].strip()):
+                block = block + [""]
+            new_lines[insert_at:insert_at] = block
+
+        new_text = "\n".join(new_lines) + "\n" if new_lines else ""
+        changed = new_text != old_text
+        backup = None
+
+        if(changed):
+            try:
+                if(old_text is not None):
+                    backup = f"{path}.bak"
+                    shutil.copy2(path, backup)
+                QuickIni.atomic_write(path, new_text, path if old_text is not None else template_path)
+            except OSError as e:
+                QuickIni.error_message = f"Could not write synced config '{file_location}': '{e}'"
+                return False
+
+        QuickIni.sync_report = {
+            "created": old_text is None,
+            "changed": changed,
+            "added": added if old_text is not None else [],
+            "orphaned": orphaned,
+            "backup": backup,
+        }
+        return True
+
+    @staticmethod
+    def get_sync_report() -> dict[str, Any] | None:
+        """
+        Returns what the last template sync did, or None if no template was synced.
+        Return:
+            dict[str, Any]: "created" (bool) the config was made from the template, "changed" (bool) the config was rewritten,
+                "added" (list) keys taken from the template, "orphaned" (list) keys kept that aren't in the template,
+                "backup" (str | None) the path of the backup of the previous config
+        Example:
+            >>> load_file("config.ini", template=True)
+                True
+            >>> get_sync_report()
+                {'created': False, 'changed': True, 'added': ['database.timeout'], 'orphaned': [], 'backup': '/app/config.ini.bak'}
+        """
+        if(QuickIni.sync_report is None):
+            return None
+        return {k: list(v) if isinstance(v, list) else v for k, v in QuickIni.sync_report.items()}
+
+    @staticmethod
+    def load_file(file_location:str, auto_type_convert:bool = True, empty_default:Any = None, template:bool | str = False) -> bool:
         """
         Load a ini style file from the file system or from a URL.
         \nUse get_value() or get_all() to access. Keys inside a [section] are stored as "section.key".
@@ -101,14 +311,22 @@ class QuickIni:
             name (str): The path/URL of the file to load.
             auto_type_convert (bool): Automaticly convert into recognized types such as True/False, int, float.
             empty_default (Any): The default value when a value is left blank (overrides auto_type_convert).
+            template (bool | str): Sync the file with a template before loading, see sync_template().
+                True uses "<file>.template" if it exists, or pass the path of the template file.
         Returns:
             bool: True if successfull, False otherwise
         Example:
             >>> load_file("../config.ini", empty_default="")
                 True
+            >>> load_file("config.ini", template=True)
+                True
         """
         QuickIni.parsed_ini = {}
         QuickIni.auto_type_convert_g = auto_type_convert
+
+        if(not QuickIni.sync_template(file_location, template)):
+            # sync_template sets the error message
+            return False
 
         f_data:str
 
@@ -138,7 +356,7 @@ class QuickIni:
             stripped = lines[i].strip()
 
             # Skip full line comments
-            if(stripped.startswith(("#", ";"))):
+            if(stripped.startswith("#")):
                 i += 1
                 continue
 
@@ -158,7 +376,7 @@ class QuickIni:
 
             left, right = line.split("=", 1)
             key = left.strip()
-            right = right.strip()
+            right = QuickIni.unescape(right.strip())
             if(current_section):
                 key = f"{current_section}.{key}"
 
@@ -169,7 +387,7 @@ class QuickIni:
                 i += 1  # Move to the first array item
 
                 while i < len(lines) and lines[i].strip().startswith("|"):
-                    array_value = QuickIni.strip_comment(lines[i].strip()[1:]).strip()  # Remove the | prefix
+                    array_value = QuickIni.unescape(QuickIni.strip_comment(lines[i].strip()[1:]).strip())  # Remove the | prefix
 
                     if auto_type_convert:
                         array_value = QuickIni.string_to_type(array_value)
@@ -310,10 +528,11 @@ class QuickIni:
             raise(ValueError(QuickIni.error_message))
 
         # Handle array values
+        escaped = [QuickIni.escape(s) for s in item_strings]
         if isinstance(value, list):
-            key_value_lines = [f"{key}=\n"] + [f"|{s}\n" for s in item_strings]
+            key_value_lines = [f"{key}=\n"] + [f"|{s}\n" for s in escaped]
         else:
-            key_value_lines = [f"{key}={item_strings[0]}\n"]
+            key_value_lines = [f"{key}={escaped[0]}\n"]
 
         # Resolve symlinks so the real file gets replaced, not the link
         path = os.path.realpath(str(QuickIni.loaded_file_path))
@@ -332,9 +551,9 @@ class QuickIni:
                 stripped = line.strip()
 
                 name = QuickIni.section_name(stripped)
-                if(name is not None and not stripped.startswith(("#", ";"))):
+                if(name is not None and not stripped.startswith("#")):
                     current_section = name
-                elif(not key_found and current_section == section and not stripped.startswith(("#", ";"))):
+                elif(not key_found and current_section == section and not stripped.startswith("#")):
                     content = QuickIni.strip_comment(stripped)
                     if("=" in content):
                         left, right = content.split("=", 1)
@@ -371,17 +590,7 @@ class QuickIni:
                         new_lines[insert_at - 1] += "\n"
                     new_lines[insert_at:insert_at] = key_value_lines
 
-            # Write to a temporary file next to the original, then swap it in
-            fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".quick_ini_", suffix=".tmp")
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as file:
-                    file.writelines(new_lines)
-                shutil.copymode(path, temp_path)
-                os.replace(temp_path, path)
-            except BaseException:
-                try: os.remove(temp_path)
-                except OSError: pass
-                raise
+            QuickIni.atomic_write(path, "".join(new_lines), path)
 
         except FileNotFoundError as e:
             QuickIni.error_message = f"Could not find file '{QuickIni.loaded_file_path}'"

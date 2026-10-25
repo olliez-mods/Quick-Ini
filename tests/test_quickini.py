@@ -522,9 +522,26 @@ class TestQuickIniFormats(unittest.TestCase):
         for s in ["no", "No", "off", "OFF", "false"]:
             self.assertIs(QuickIni.string_to_type(s), False)
 
-    def test_semicolon_and_inline_comments(self):
-        self.load("; a comment\n  # indented comment\nport=8080 # dev port\nhost=localhost ; main\ncolor=#fff\nurl=http://x.com/a#b\n")
-        self.assertEqual(QuickIni.get_all(), {"port": 8080, "host": "localhost", "color": "#fff", "url": "http://x.com/a#b"})
+    def test_inline_comments(self):
+        self.load("# a comment\n  # indented comment\nport=8080 # dev port\nmode=fast#no space\nkey =   # fill this in\n")
+        self.assertEqual(QuickIni.get_all(), {"port": 8080, "mode": "fast", "key": None})
+
+    def test_semicolon_is_not_a_comment(self):
+        self.load("list=a;b ; c\n")
+        self.assertEqual(QuickIni.get_value("list"), "a;b ; c")
+
+    def test_escaped_comment_characters(self):
+        self.load("color=\\#fff\nurl = http://x.com/a\\#b  # link\npath=C:\\new\\dir\nparts =\n|\\#1  # first\n")
+        self.assertEqual(QuickIni.get_all(), {"color": "#fff", "url": "http://x.com/a#b", "path": "C:\\new\\dir", "parts": ["#1"]})
+
+    def test_write_escapes_comment_characters(self):
+        path = self.load("color=red\n")
+        self.assertEqual(QuickIni.write_value("color", "#fff"), "#fff")
+        QuickIni.write_value("tags", ["a;b", "#c"], add_if_not_found=True)
+        self.assertEqual(self.read(path), "color=\\#fff\ntags=\n|a;b\n|\\#c\n")
+        QuickIni.load_file(path)
+        self.assertEqual(QuickIni.get_value("color"), "#fff")
+        self.assertEqual(QuickIni.get_value("tags"), ["a;b", "#c"])
 
     def test_array_items_trimmed_and_commented(self):
         self.load("parts =\n  | one\n|2  # two\n")
@@ -628,6 +645,185 @@ class TestQuickIniFormats(unittest.TestCase):
         mock_urlopen.side_effect = TimeoutError("timed out")
         self.assertFalse(QuickIni.load_file("http://example.com/config.ini"))
         self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 10)
+
+
+
+class TestQuickIniTemplate(unittest.TestCase):
+    """Tests for syncing a config file with a template."""
+
+    TEMPLATE = """# App settings
+debug = false
+name = MyApp
+
+# Things to load
+parts =
+|one
+|two
+
+[database]
+host = localhost
+port = 5432
+"""
+
+    def setUp(self):
+        QuickIni.parsed_ini = {}
+        QuickIni.loaded_file_path = None
+        QuickIni.auto_type_convert_g = True
+        QuickIni.error_message = ""
+        QuickIni.web_file = None
+        QuickIni.sync_report = None
+        self.dir = tempfile.TemporaryDirectory()
+        self.config = os.path.join(self.dir.name, "config.ini")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def write(self, name, content):
+        path = os.path.join(self.dir.name, name)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return path
+
+    def read(self, path):
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ===== FINDING THE TEMPLATE =====
+
+    def test_missing_config_is_created_from_template(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.assertTrue(QuickIni.load_file(self.config, template=True))
+        self.assertEqual(self.read(self.config), self.TEMPLATE)
+        self.assertEqual(QuickIni.get_value("port", section="database"), 5432)
+        report = QuickIni.get_sync_report()
+        self.assertTrue(report["created"])
+        self.assertTrue(report["changed"])
+        self.assertEqual(report["added"], [])
+        self.assertIsNone(report["backup"])
+
+    def test_template_path_given_by_name(self):
+        template = self.write("template.ini", self.TEMPLATE)
+        self.assertTrue(QuickIni.load_file(self.config, template=template))
+        self.assertEqual(self.read(self.config), self.TEMPLATE)
+
+    def test_missing_default_template_is_skipped(self):
+        self.write("config.ini", "debug = true\n")
+        self.assertTrue(QuickIni.load_file(self.config, template=True))
+        self.assertTrue(QuickIni.get_value("debug"))
+        self.assertIsNone(QuickIni.get_sync_report())
+        self.assertEqual(self.read(self.config), "debug = true\n")
+
+    def test_missing_named_template_fails(self):
+        self.write("config.ini", "debug = true\n")
+        missing = os.path.join(self.dir.name, "nope.ini")
+        self.assertFalse(QuickIni.load_file(self.config, template=missing))
+        self.assertIn("Could not find template", QuickIni.get_last_error())
+
+    def test_no_template_by_default(self):
+        self.write("config.ini", "debug = true\n")
+        self.write("config.ini.template", self.TEMPLATE)
+        self.assertTrue(QuickIni.load_file(self.config))
+        self.assertEqual(self.read(self.config), "debug = true\n")
+        self.assertIsNone(QuickIni.get_sync_report())
+
+    def test_url_config_with_template_fails(self):
+        self.assertFalse(QuickIni.load_file("https://example.com/config.ini", template=True))
+        self.assertIn("URL", QuickIni.get_last_error())
+
+    # ===== MERGING =====
+
+    def test_user_values_are_kept_and_new_keys_added(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "debug=yes   # on for now\n\n[database]\nport = 6000\n")
+        self.assertTrue(QuickIni.load_file(self.config, template=True))
+        self.assertEqual(self.read(self.config), """# App settings
+debug=yes   # on for now
+name = MyApp
+
+# Things to load
+parts =
+|one
+|two
+
+[database]
+host = localhost
+port = 6000
+""")
+        self.assertTrue(QuickIni.get_value("debug"))
+        self.assertEqual(QuickIni.get_value("port", section="database"), 6000)
+        report = QuickIni.get_sync_report()
+        self.assertEqual(report["added"], ["name", "parts", "database.host"])
+        self.assertEqual(report["orphaned"], [])
+
+    def test_user_array_replaces_template_array(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "parts =\n|three\n")
+        QuickIni.load_file(self.config, template=True)
+        self.assertEqual(QuickIni.get_value("parts"), ["three"])
+        self.assertNotIn("|one", self.read(self.config))
+
+    def test_user_blank_value_replaces_template_array(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "parts =\n")
+        QuickIni.load_file(self.config, template=True)
+        self.assertIsNone(QuickIni.get_value("parts", "missing"))
+        self.assertNotIn("|one", self.read(self.config))
+
+    def test_orphaned_keys_kept_in_their_section(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "old = 1\n[database]\nuser = admin\n[cache]\nsize = 10\n")
+        self.assertTrue(QuickIni.load_file(self.config, template=True))
+        self.assertEqual(QuickIni.get_value("old"), 1)
+        self.assertEqual(QuickIni.get_value("user", section="database"), "admin")
+        self.assertEqual(QuickIni.get_value("size", section="cache"), 10)
+        self.assertEqual(QuickIni.get_sync_report()["orphaned"], ["old", "database.user", "cache.size"])
+        text = self.read(self.config)
+        self.assertEqual(text.count("# Not in the template"), 3)
+        self.assertLess(text.index("old = 1"), text.index("[database]"))
+
+    def test_sync_is_stable(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "old = 1\n[database]\nport = 6000\nuser = admin\n[cache]\nsize = 10\n")
+        QuickIni.load_file(self.config, template=True)
+        first = self.read(self.config)
+        os.remove(self.config + ".bak")
+        QuickIni.load_file(self.config, template=True)
+        self.assertEqual(self.read(self.config), first)
+        report = QuickIni.get_sync_report()
+        self.assertFalse(report["changed"])
+        self.assertEqual(report["added"], [])
+        self.assertIsNone(report["backup"])
+        self.assertFalse(os.path.exists(self.config + ".bak"))
+
+    def test_backup_holds_previous_config(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "debug = true\n")
+        QuickIni.load_file(self.config, template=True)
+        report = QuickIni.get_sync_report()
+        self.assertEqual(report["backup"], os.path.realpath(self.config) + ".bak")
+        self.assertEqual(self.read(report["backup"]), "debug = true\n")
+
+    def test_template_comments_win(self):
+        self.write("config.ini.template", "# new comment\ndebug = false\n")
+        self.write("config.ini", "# my own comment\ndebug = true\n")
+        QuickIni.load_file(self.config, template=True)
+        self.assertEqual(self.read(self.config), "# new comment\ndebug = true\n")
+
+    def test_sync_template_without_loading(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.assertTrue(QuickIni.sync_template(self.config))
+        self.assertTrue(os.path.exists(self.config))
+        self.assertEqual(QuickIni.parsed_ini, {})
+
+    def test_failed_sync_write_keeps_original(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "debug = true\n")
+        with patch('os.replace', side_effect=PermissionError("denied")):
+            self.assertFalse(QuickIni.load_file(self.config, template=True))
+        self.assertIn("Could not write synced config", QuickIni.get_last_error())
+        self.assertEqual(self.read(self.config), "debug = true\n")
+        self.assertEqual(os.listdir(self.dir.name).count("config.ini"), 1)
+        self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(self.dir.name)))
 
 
 if __name__ == '__main__':

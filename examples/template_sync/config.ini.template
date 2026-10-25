@@ -1,0 +1,14 @@
+# Copy of every setting the app knows about, with defaults.
+# config.ini is created from this and kept up to date with it.
+
+# Turn on extra logging
+debug = false
+
+# Port the server listens on
+port = 8080
+
+[database]
+host = localhost
+port = 5432
+# Seconds to wait for a connection
+timeout = 30

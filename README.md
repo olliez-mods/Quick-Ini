@@ -35,14 +35,38 @@ QuickIni.write_value("new_setting", "value", add_if_not_found=True)
 QuickIni.write_value("port", 5433, section="database")
 ```
 
+## Keeping config.ini up to date with a template
+
+Projects often ship a `config.ini.template` that you copy to `config.ini`. When the template gets new settings later, QuickINI can update `config.ini` for you:
+
+```python
+QuickIni.load_file("config.ini", template=True)            # uses config.ini.template
+QuickIni.load_file("config.ini", template="defaults.ini")  # uses defaults.ini
+```
+
+- If `config.ini` doesn't exist, it is created from the template
+- The template decides which settings exist, their order, sections and comments. Your values are kept exactly as you wrote them
+- New settings from the template are added with their default values
+- Settings that are no longer in the template are kept at the end of their section, under a comment
+- The file is only rewritten when something changed, and the previous version is saved as `config.ini.bak`
+- With `template=True` a missing template is skipped, so deployed copies without one still load. A template given by name must exist
+
+```python
+report = QuickIni.get_sync_report()
+if report and report["added"]:
+    print("New settings added to config.ini:", ", ".join(report["added"]))
+```
+
+The report also has `created`, `changed`, `orphaned` (settings kept that aren't in the template) and `backup`. Use `QuickIni.sync_template("config.ini")` to sync without loading.
+
 ## File Format
 
 ```ini
-# Comments start with # or ;
-debug = yes          ; inline comments need a space before them
+# Comments start with #
+debug = yes          # comments can also go after a value
 port = 8080
 timeout = 2.5e1
-color = #fff         # a # with no space before it is part of the value
+color = \#fff        # use \# to put a # in a value
 
 # Lists
 parts =
@@ -58,8 +82,20 @@ port = 5432
 
 - Load INI files from local filesystem or URLs
 - Automatic type conversion: int, float (including `-1.5` and `1e5`), bool (`true`/`false`, `yes`/`no`, `on`/`off`) and str
-- Sections, plus `#`, `;` and inline comments
+- Sections, plus `#` comments, including after a value (escape `#` as `\#` in values)
 - Lists using `|` lines
+- Keep `config.ini` up to date with a template file
 - Write values back to files safely, the file is never left half written
 - Error handling with detailed messages
 - Static class design for easy use across modules
+
+## Examples
+
+Runnable examples are in the [examples](examples) folder:
+
+- [basic](examples/basic/basic.py): loading a file, defaults, types and lists
+- [sections](examples/sections/sections.py): reading keys in `[sections]` and `get_all()`
+- [writing](examples/writing/writing.py): changing and adding values
+- [template_sync](examples/template_sync/template_sync.py): creating and updating `config.ini` from `config.ini.template`
+
+Run one with `python examples/basic/basic.py` after installing QuickINI.
