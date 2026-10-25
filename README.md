@@ -13,7 +13,7 @@ pip install quick_ini
 ```python
 from quick_ini import QuickIni
 
-# Load from file
+# Load from file, before any get_value() or get_all() (those raise RuntimeError otherwise)
 QuickIni.load_file("config.ini")
 
 # Load from URL

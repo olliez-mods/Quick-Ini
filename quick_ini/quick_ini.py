@@ -17,6 +17,7 @@ class QuickIni:
     error_message: str = ""
     web_file: str | None = None
     sync_report: dict[str, Any] | None = None
+    load_called: bool = False
 
     @staticmethod
     def grab_from_url(url:str, timeout:float = 10) -> bool:
@@ -323,6 +324,8 @@ class QuickIni:
         """
         QuickIni.parsed_ini = {}
         QuickIni.auto_type_convert_g = auto_type_convert
+        # Set even if loading fails, the caller gets False and reading falls back to defaults
+        QuickIni.load_called = True
 
         if(not QuickIni.sync_template(file_location, template)):
             # sync_template sets the error message
@@ -412,6 +415,15 @@ class QuickIni:
         return True
 
     @staticmethod
+    def check_loaded(call:str) -> None:
+        """
+        Raises a RuntimeError if load_file() was never called, so settings aren't silently read as defaults.
+        """
+        if(not QuickIni.load_called):
+            QuickIni.error_message = f"QuickIni.{call} was called before QuickIni.load_file()"
+            raise(RuntimeError(QuickIni.error_message))
+
+    @staticmethod
     def get_value(name:str, default:Any = None, expected_type:type | None = None, section:str | None = None) -> Any:
         """
         Returns the value attached to the given name.
@@ -423,6 +435,8 @@ class QuickIni:
             section (str): The [section] the setting is in, None for keys above any section
         Return:
             Any: The value associated with the name
+        Raises:
+            RuntimeError: If load_file() was never called
         Example:
             >>> get_value("do_debug_logs", False)
             True
@@ -431,6 +445,7 @@ class QuickIni:
         """
         if(section):
             name = f"{section}.{name}"
+        QuickIni.check_loaded(f"get_value({name!r})")
         value:Any = QuickIni.parsed_ini.get(name, default)
         if(expected_type != None):
             if(not isinstance(value, expected_type)):
@@ -446,10 +461,13 @@ class QuickIni:
             section (str): Only return the settings in this [section], with the section prefix removed
         Return:
             dict[str, Any]: The settings, keys in a section are given as "section.key" when no section is passed
+        Raises:
+            RuntimeError: If load_file() was never called
         Example:
             >>> get_all("database")
             {'host': 'localhost', 'port': 5432}
         """
+        QuickIni.check_loaded(f"get_all({section!r})" if section else "get_all()")
         if(not section):
             return dict(QuickIni.parsed_ini)
         prefix = f"{section}."

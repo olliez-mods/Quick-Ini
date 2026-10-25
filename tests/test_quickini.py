@@ -16,6 +16,7 @@ class TestQuickIni(unittest.TestCase):
         """Set up test fixtures before each test method."""
         # Clear any previous state
         QuickIni.parsed_ini = {}
+        QuickIni.load_called = False
         QuickIni.loaded_file_path = None
         QuickIni.auto_type_convert_g = True
         QuickIni.error_message = ""
@@ -473,6 +474,7 @@ class TestQuickIniFormats(unittest.TestCase):
 
     def setUp(self):
         QuickIni.parsed_ini = {}
+        QuickIni.load_called = False
         QuickIni.loaded_file_path = None
         QuickIni.auto_type_convert_g = True
         QuickIni.error_message = ""
@@ -495,6 +497,30 @@ class TestQuickIniFormats(unittest.TestCase):
     def read(self, path):
         with open(path, encoding='utf-8') as f:
             return f.read()
+
+    # ===== LOADING FIRST =====
+
+    def test_get_value_before_load_raises(self):
+        with self.assertRaises(RuntimeError):
+            QuickIni.get_value("port", 8080)
+        self.assertEqual(QuickIni.get_last_error(), "QuickIni.get_value('port') was called before QuickIni.load_file()")
+
+    def test_get_value_section_before_load_names_key(self):
+        with self.assertRaises(RuntimeError):
+            QuickIni.get_value("port", section="database")
+        self.assertIn("'database.port'", QuickIni.get_last_error())
+
+    def test_get_all_before_load_raises(self):
+        with self.assertRaises(RuntimeError):
+            QuickIni.get_all()
+        with self.assertRaises(RuntimeError):
+            QuickIni.get_all("database")
+        self.assertIn("get_all('database')", QuickIni.get_last_error())
+
+    def test_failed_load_falls_back_to_defaults(self):
+        self.assertFalse(QuickIni.load_file("/no/such/config.ini"))
+        self.assertEqual(QuickIni.get_value("port", 8080), 8080)
+        self.assertEqual(QuickIni.get_all(), {})
 
     # ===== PARSING =====
 
@@ -667,6 +693,7 @@ port = 5432
 
     def setUp(self):
         QuickIni.parsed_ini = {}
+        QuickIni.load_called = False
         QuickIni.loaded_file_path = None
         QuickIni.auto_type_convert_g = True
         QuickIni.error_message = ""
