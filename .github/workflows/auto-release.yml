@@ -1,121 +1,100 @@
-name: Auto Release on Version Change
+name: CI & Release
 
 on:
   push:
     branches: [master]
+  pull_request:
+  workflow_dispatch: # Allows manual triggering
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  check-version:
-    runs-on: ubuntu-latest
-    outputs:
-      version-changed: ${{ steps.check.outputs.changed }}
-      new-version: ${{ steps.check.outputs.version }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Get full history
-
-      - name: Check if version changed
-        id: check
-        run: |
-          # Get current version from setup.py
-          CURRENT_VERSION=$(grep -o 'version="[^"]*"' setup.py | cut -d'"' -f2)
-          echo "Current version: $CURRENT_VERSION"
-
-          # Get previous version from the last commit
-          git checkout HEAD~1 -- setup.py 2>/dev/null || echo "No previous setup.py"
-          if [ -f setup.py ]; then
-            PREVIOUS_VERSION=$(grep -o 'version="[^"]*"' setup.py | cut -d'"' -f2 2>/dev/null || echo "0.0.0")
-          else
-            PREVIOUS_VERSION="0.0.0"
-          fi
-          echo "Previous version: $PREVIOUS_VERSION"
-
-          # Restore current setup.py
-          git checkout HEAD -- setup.py
-
-          # Check if version changed
-          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
-            echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Version unchanged"
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          fi
-
   test:
-    needs: check-version
-    if: needs.check-version.outputs.version-changed == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Notify Process Started
-        if: matrix.python-version == '3.8' # Only notify once, not for each Python version
-        run: |
-          curl -H "Title: 🚀 Started" \
-               -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-               ${{ vars.NTFY_URL }}
-
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+      - name: Install package
+        run: pip install -e .
 
       - name: Run tests
-        run: |
-          python -m unittest discover tests
+        run: python -m unittest discover tests
 
-  auto-release:
-    needs: [check-version, test]
-    if: needs.check-version.outputs.version-changed == 'true'
+  check-version:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      released: ${{ steps.check.outputs.released }}
 
     steps:
       - uses: actions/checkout@v4
 
+      # Release whenever setup.py's version has no matching tag yet
+      - name: Check for existing release tag
+        id: check
+        run: |
+          VERSION=$(grep -o 'version="[^"]*"' setup.py | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "v$VERSION already released"
+            echo "released=true" >> $GITHUB_OUTPUT
+          else
+            echo "v$VERSION not released yet"
+            echo "released=false" >> $GITHUB_OUTPUT
+          fi
+
+  release:
+    needs: [test, check-version]
+    if: needs.check-version.outputs.released == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Create the GitHub release and tag
+      id-token: write # PyPI trusted publishing
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history and tags, for release notes
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install build twine
-
       - name: Build package
-        run: python -m build
+        run: |
+          pip install build
+          python -m build
+
+      # Publish before tagging, so a failed upload is retried on the next push
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
       - name: Generate release notes from commits
-        id: release-notes
         run: |
-          VERSION="${{ needs.check-version.outputs.new-version }}"
+          VERSION="${{ needs.check-version.outputs.version }}"
 
-          # Get commits since last tag (or all if no tags)
+          # Commits since the last tag (or all if no tags)
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -n "$LAST_TAG" ]; then
-            COMMITS=$(git log ${LAST_TAG}..HEAD --oneline --pretty=format:"- %s")
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s")
           else
-            COMMITS=$(git log --oneline --pretty=format:"- %s")
+            COMMITS=$(git log --pretty=format:"- %s")
           fi
 
-          # Create release notes
           cat > release_notes.md << EOF
           ## What's Changed in v${VERSION}
 
@@ -127,48 +106,11 @@ jobs:
           \`\`\`
           EOF
 
-          echo "Generated release notes:"
           cat release_notes.md
 
       - name: Create GitHub Release
-        id: create-release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check-version.outputs.new-version }}
-          name: v${{ needs.check-version.outputs.new-version }}
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
           body_path: release_notes.md
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          draft: false
-          prerelease: false
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-
-  notify-final-result:
-    needs: [check-version, test, auto-release]
-    if: always() && needs.check-version.outputs.version-changed == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Notify Final Result
-        run: |
-          if [ "${{ needs.test.result }}" = "failure" ]; then
-            curl -H "Title: ❌ Tests Failed" \
-                 -H "Priority: high" \
-                 -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-                 ${{ vars.NTFY_URL }}
-          elif [ "${{ needs.auto-release.result }}" = "failure" ]; then
-            curl -H "Title: ❌ Release Failed" \
-                 -H "Priority: high" \
-                 -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-                 ${{ vars.NTFY_URL }}
-          elif [ "${{ needs.auto-release.result }}" = "success" ]; then
-            curl -H "Title: ✅ Released" \
-                 -d "Quick-Ini v${{ needs.check-version.outputs.new-version }}" \
-                 ${{ vars.NTFY_URL }}
-          fi
