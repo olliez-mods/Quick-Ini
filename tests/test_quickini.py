@@ -375,14 +375,19 @@ another_key=value with spaces
             with self.assertRaises(IOError):
                 QuickIni.write_value("test_key", "test_value")
                 
-    def test_write_value_backup_removal_failure(self):
-        """Test backup removal failure handling."""
+    def test_write_value_failed_write_keeps_original(self):
+        """Test a failed write leaves the original file untouched and no temp files behind."""
         QuickIni.load_file(self.temp_file.name)
-        
-        # Mock os.remove to raise an exception
-        with patch('os.remove', side_effect=OSError("Cannot remove backup")):
+        directory = os.path.dirname(self.temp_file.name)
+        files_before = set(os.listdir(directory))
+
+        with patch('os.replace', side_effect=OSError("Cannot replace")):
             with self.assertRaises(OSError):
-                QuickIni.write_value("test_key", "test_value", add_if_not_found=True, do_backup=True)
+                QuickIni.write_value("name", "Broken")
+
+        with open(self.temp_file.name, encoding='utf-8') as f:
+            self.assertEqual(f.read(), self.test_content)
+        self.assertEqual(set(os.listdir(directory)), files_before)
         
     @patch('urllib.request.urlopen')
     def test_load_file_from_url(self, mock_urlopen):
@@ -461,6 +466,168 @@ another_key=value with spaces
             self.assertIsNone(QuickIni.get_value("malformed_line_no_equals"))
         finally:
             os.unlink(malformed_file.name)
+
+
+class TestQuickIniFormats(unittest.TestCase):
+    """Tests for spacing, comments, sections and the extra value formats."""
+
+    def setUp(self):
+        QuickIni.parsed_ini = {}
+        QuickIni.loaded_file_path = None
+        QuickIni.auto_type_convert_g = True
+        QuickIni.error_message = ""
+        QuickIni.web_file = None
+        self.paths = []
+
+    def tearDown(self):
+        for path in self.paths:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def load(self, content):
+        temp = tempfile.NamedTemporaryFile(mode='w', suffix='.ini', delete=False, encoding='utf-8')
+        temp.write(content)
+        temp.close()
+        self.paths.append(temp.name)
+        self.assertTrue(QuickIni.load_file(temp.name))
+        return temp.name
+
+    def read(self, path):
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ===== PARSING =====
+
+    def test_spaces_around_equals(self):
+        self.load("port = 8080\n  name =  App  \n")
+        self.assertEqual(QuickIni.get_value("port"), 8080)
+        self.assertEqual(QuickIni.get_value("name"), "App")
+
+    def test_signed_and_scientific_numbers(self):
+        self.assertEqual(QuickIni.string_to_type("-5"), -5)
+        self.assertEqual(QuickIni.string_to_type("+5"), 5)
+        self.assertEqual(QuickIni.string_to_type("-1.5"), -1.5)
+        self.assertEqual(QuickIni.string_to_type("1e5"), 100000.0)
+        self.assertEqual(QuickIni.string_to_type("2.5E-3"), 0.0025)
+        self.assertEqual(QuickIni.string_to_type(".5"), 0.5)
+
+    def test_non_numbers_stay_strings(self):
+        # These used to crash or be misread
+        for s in ["²", "1_000", "١٢", "-", "1e", "e5", "inf", "nan", "."]:
+            self.assertEqual(QuickIni.string_to_type(s), s)
+
+    def test_bool_words(self):
+        for s in ["yes", "YES", "on", "On", "true"]:
+            self.assertIs(QuickIni.string_to_type(s), True)
+        for s in ["no", "No", "off", "OFF", "false"]:
+            self.assertIs(QuickIni.string_to_type(s), False)
+
+    def test_semicolon_and_inline_comments(self):
+        self.load("; a comment\n  # indented comment\nport=8080 # dev port\nhost=localhost ; main\ncolor=#fff\nurl=http://x.com/a#b\n")
+        self.assertEqual(QuickIni.get_all(), {"port": 8080, "host": "localhost", "color": "#fff", "url": "http://x.com/a#b"})
+
+    def test_array_items_trimmed_and_commented(self):
+        self.load("parts =\n  | one\n|2  # two\n")
+        self.assertEqual(QuickIni.get_value("parts"), ["one", 2])
+
+    def test_sections(self):
+        self.load("port=1\n[db]\nport = 5432\nhost=localhost\n[ web ]  # site\nport=80\n")
+        self.assertEqual(QuickIni.get_value("port"), 1)
+        self.assertEqual(QuickIni.get_value("port", section="db"), 5432)
+        self.assertEqual(QuickIni.get_value("db.port"), 5432)
+        self.assertEqual(QuickIni.get_value("port", section="web"), 80)
+        self.assertEqual(QuickIni.get_value("missing", "d", section="db"), "d")
+
+    def test_get_all(self):
+        self.load("a=1\n[db]\nport=5432\nhost=localhost\n")
+        self.assertEqual(QuickIni.get_all(), {"a": 1, "db.port": 5432, "db.host": "localhost"})
+        self.assertEqual(QuickIni.get_all("db"), {"port": 5432, "host": "localhost"})
+        self.assertEqual(QuickIni.get_all("nope"), {})
+        # Should be a copy
+        QuickIni.get_all()["a"] = 2
+        self.assertEqual(QuickIni.get_value("a"), 1)
+
+    # ===== WRITING =====
+
+    def test_write_existing_key_with_spaces(self):
+        path = self.load("port = 8080 # dev\nname=App\n")
+        QuickIni.write_value("port", 9090)
+        self.assertEqual(self.read(path), "port=9090\nname=App\n")
+
+    def test_write_ignores_commented_key(self):
+        path = self.load("# port=1\nport=2\n")
+        QuickIni.write_value("port", 3)
+        self.assertEqual(self.read(path), "# port=1\nport=3\n")
+
+    def test_write_in_section(self):
+        path = self.load("port=1\n\n[db]\nport=5432\n\n[web]\nport=80\n")
+        QuickIni.write_value("port", 6000, section="db")
+        self.assertEqual(self.read(path), "port=1\n\n[db]\nport=6000\n\n[web]\nport=80\n")
+        self.assertEqual(QuickIni.get_value("port", section="db"), 6000)
+        self.assertEqual(QuickIni.get_value("port"), 1)
+
+    def test_add_key_to_existing_section(self):
+        path = self.load("[db]\nport=5432\n\n[web]\nport=80\n")
+        QuickIni.write_value("host", "localhost", add_if_not_found=True, section="db")
+        self.assertEqual(self.read(path), "[db]\nport=5432\nhost=localhost\n\n[web]\nport=80\n")
+
+    def test_add_top_level_key_goes_above_sections(self):
+        path = self.load("a=1\n\n[db]\nport=5432\n")
+        QuickIni.write_value("b", 2, add_if_not_found=True)
+        self.assertEqual(self.read(path), "a=1\nb=2\n\n[db]\nport=5432\n")
+        QuickIni.load_file(path)
+        self.assertEqual(QuickIni.get_value("b"), 2)
+
+    def test_add_new_section(self):
+        path = self.load("a=1")
+        QuickIni.write_value("port", 80, add_if_not_found=True, section="web")
+        self.assertEqual(self.read(path), "a=1\n\n[web]\nport=80\n")
+
+    def test_write_missing_section_without_add_flag(self):
+        self.load("a=1\n")
+        with self.assertRaises(ValueError) as context:
+            QuickIni.write_value("port", 80, section="web")
+        self.assertIn("in section 'web'", str(context.exception))
+
+    def test_write_value_with_line_break_rejected(self):
+        path = self.load("a=1\n")
+        with self.assertRaises(ValueError):
+            QuickIni.write_value("a", "two\nlines")
+        with self.assertRaises(ValueError):
+            QuickIni.write_value("a", ["ok", "not\rok"])
+        self.assertEqual(self.read(path), "a=1\n")
+
+    def test_write_keeps_unicode_and_permissions(self):
+        path = self.load("name=café\n")
+        os.chmod(path, 0o640)
+        QuickIni.write_value("city", "Zürich", add_if_not_found=True)
+        self.assertEqual(self.read(path), "name=café\ncity=Zürich\n")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)
+
+    def test_write_after_url_load_rejected(self):
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            mock_response = mock_urlopen.return_value.__enter__.return_value
+            mock_response.status = 200
+            mock_response.read.return_value = b"a=1"
+            QuickIni.load_file("http://example.com/config.ini")
+        with self.assertRaises(ValueError) as context:
+            QuickIni.write_value("a", 2)
+        self.assertIn("URL", str(context.exception))
+
+    # ===== URLS =====
+
+    @patch('urllib.request.urlopen')
+    def test_url_network_error_returns_false(self, mock_urlopen):
+        from urllib.error import URLError
+        mock_urlopen.side_effect = URLError("no internet")
+        self.assertFalse(QuickIni.load_file("http://example.com/config.ini"))
+        self.assertIn("Could not get file from URL", QuickIni.get_last_error())
+
+    @patch('urllib.request.urlopen')
+    def test_url_timeout_returns_false(self, mock_urlopen):
+        mock_urlopen.side_effect = TimeoutError("timed out")
+        self.assertFalse(QuickIni.load_file("http://example.com/config.ini"))
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 10)
 
 
 if __name__ == '__main__':
