@@ -40,11 +40,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Release whenever setup.py's version has no matching tag yet
+      # Release whenever pyproject.toml's version has no matching tag yet
       - name: Check for existing release tag
         id: check
         run: |
-          VERSION=$(grep -o 'version="[^"]*"' setup.py | cut -d'"' -f2)
+          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
             echo "v$VERSION already released"

@@ -1,5 +1,5 @@
 from urllib.parse import urlparse
-from typing import Type, Any, Union, Dict, Optional, List
+from typing import Any
 import os
 import re
 import shutil
@@ -11,11 +11,11 @@ INT_PATTERN = re.compile(r"[+-]?[0-9]+")
 FLOAT_PATTERN = re.compile(r"[+-]?(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[+-]?[0-9]+[eE][+-]?[0-9]+")
 
 class QuickIni:
-    parsed_ini: Dict[str, Union[str, int, bool, float, List, None]] = {}
-    loaded_file_path: Optional[str] = None
+    parsed_ini: dict[str, str | int | bool | float | list | None] = {}
+    loaded_file_path: str | None = None
     auto_type_convert_g: bool = True
     error_message: str = ""
-    web_file: Optional[str] = None
+    web_file: str | None = None
 
     @staticmethod
     def grab_from_url(url:str, timeout:float = 10) -> bool:
@@ -62,7 +62,7 @@ class QuickIni:
         return s
 
     @staticmethod
-    def section_name(line:str) -> Optional[str]:
+    def section_name(line:str) -> str | None:
         """
         Returns the section name if the line is a "[section]" header, otherwise None.
         """
@@ -110,7 +110,7 @@ class QuickIni:
         QuickIni.parsed_ini = {}
         QuickIni.auto_type_convert_g = auto_type_convert
 
-        f_data:str = None
+        f_data:str
 
         # Check if the provided location is a URL
         if(QuickIni.is_string_url(file_location)):
@@ -194,14 +194,14 @@ class QuickIni:
         return True
 
     @staticmethod
-    def get_value(name:str, default:Any = None, expected_type:Type = None, section:Optional[str] = None) -> Any:
+    def get_value(name:str, default:Any = None, expected_type:type | None = None, section:str | None = None) -> Any:
         """
         Returns the value attached to the given name.
         \nIf no setting is found, it will return the passed in default
         Args:
             name (str): The name of the setting, keys in a section can also be given as "section.key"
             default (Any): What will be returned if nothing is found
-            expected_type (Type): Will make sure the returned object is of this Type, otherwise Raise()
+            expected_type (type): Will make sure the returned object is of this type, otherwise Raise()
             section (str): The [section] the setting is in, None for keys above any section
         Return:
             Any: The value associated with the name
@@ -221,13 +221,13 @@ class QuickIni:
         return value
 
     @staticmethod
-    def get_all(section:Optional[str] = None) -> Dict[str, Any]:
+    def get_all(section:str | None = None) -> dict[str, Any]:
         """
         Returns a copy of all loaded settings.
         Args:
             section (str): Only return the settings in this [section], with the section prefix removed
         Return:
-            Dict[str, Any]: The settings, keys in a section are given as "section.key" when no section is passed
+            dict[str, Any]: The settings, keys in a section are given as "section.key" when no section is passed
         Example:
             >>> get_all("database")
             {'host': 'localhost', 'port': 5432}
@@ -238,7 +238,7 @@ class QuickIni:
         return {k[len(prefix):]: v for k, v in QuickIni.parsed_ini.items() if k.startswith(prefix)}
 
     @staticmethod
-    def find_insert_index(lines:List[str], section:Optional[str]) -> Optional[int]:
+    def find_insert_index(lines:list[str], section:str | None) -> int | None:
         """
         Returns the index just after the last non-blank line of a section (None for keys above any section),
         or None if the section doesn't exist.
@@ -262,7 +262,7 @@ class QuickIni:
         return end
 
     @staticmethod
-    def write_value(key:str, value:Any, add_if_not_found:bool=False, update_locally:bool=True, do_backup:bool=False, section:Optional[str]=None) -> Any:
+    def write_value(key:str, value:Any, add_if_not_found:bool=False, update_locally:bool=True, do_backup:bool=False, section:str | None=None) -> Any:
         """
         Writes a key-value pair to the loaded .ini file.
         \nThe file is written to a temporary file first and then swapped in, so it is never left half written.
