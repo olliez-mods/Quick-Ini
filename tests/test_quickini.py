@@ -8,6 +8,9 @@ import tempfile
 import os
 from unittest.mock import patch, mock_open
 from quick_ini import QuickIni
+from quick_ini import __main__ as cli
+from contextlib import redirect_stdout, redirect_stderr
+import io
 
 
 class TestQuickIni(unittest.TestCase):
@@ -851,6 +854,103 @@ port = 6000
         self.assertEqual(self.read(self.config), "debug = true\n")
         self.assertEqual(os.listdir(self.dir.name).count("config.ini"), 1)
         self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(self.dir.name)))
+
+
+
+class TestQuickIniCommandLine(unittest.TestCase):
+    """Tests for "quick-ini sync" (quick_ini/__main__.py), run from inside a temp folder for the default paths."""
+
+    # The template tests' setup and helpers, without running those tests again
+    TEMPLATE = TestQuickIniTemplate.TEMPLATE
+    write = TestQuickIniTemplate.write
+    read = TestQuickIniTemplate.read
+
+    def setUp(self):
+        TestQuickIniTemplate.setUp(self)
+        self.cwd = os.getcwd()
+        os.chdir(self.dir.name)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        TestQuickIniTemplate.tearDown(self)
+
+    def run_cli(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_default_config_and_template(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", "debug = true\nold = 1\n")
+        code, out, _ = self.run_cli("sync")
+        self.assertEqual(code, 0)
+        self.assertIn("debug = true", self.read(self.config))
+        self.assertIn("name = MyApp", self.read(self.config))
+        self.assertIn("Added from template: name, parts, database.host, database.port", out)
+        self.assertIn("Kept at the end (not in template): old", out)
+        self.assertIn("previous version:", out)
+        self.assertEqual(self.read(self.config + ".bak"), "debug = true\nold = 1\n")
+
+    def test_config_and_template_given(self):
+        self.write("defaults.ini", self.TEMPLATE)
+        self.write("app.ini", "debug = true\n")
+        code, _, _ = self.run_cli("sync", "--config", "app.ini", "--template", "defaults.ini")
+        self.assertEqual(code, 0)
+        self.assertIn("name = MyApp", self.read(os.path.join(self.dir.name, "app.ini")))
+
+    def test_template_defaults_to_given_config(self):
+        self.write("app.ini.template", self.TEMPLATE)
+        self.write("app.ini", "debug = true\n")
+        code, _, _ = self.run_cli("sync", "--config", "app.ini")
+        self.assertEqual(code, 0)
+        self.assertIn("name = MyApp", self.read(os.path.join(self.dir.name, "app.ini")))
+
+    def test_dry_run_shows_diff_and_writes_nothing(self):
+        for flag in ("--dry-run", "--diff"):
+            self.write("config.ini.template", self.TEMPLATE)
+            self.write("config.ini", "debug = true\n")
+            code, out, _ = self.run_cli("sync", flag)
+            self.assertEqual(code, 0)
+            self.assertEqual(self.read(self.config), "debug = true\n")
+            self.assertFalse(os.path.exists(self.config + ".bak"))
+            self.assertIn("+++ config.ini (synced)", out)
+            self.assertIn("+name = MyApp", out)
+            self.assertIn("Dry run: nothing written", out)
+
+    def test_dry_run_does_not_create_config(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        code, out, _ = self.run_cli("sync", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(self.config))
+        self.assertIn("Would create config.ini from config.ini.template", out)
+
+    def test_missing_config_is_created(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        code, out, _ = self.run_cli("sync")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.read(self.config), self.TEMPLATE)
+        self.assertIn("Created config.ini from config.ini.template", out)
+
+    def test_already_in_sync(self):
+        self.write("config.ini.template", self.TEMPLATE)
+        self.write("config.ini", self.TEMPLATE)
+        code, out, _ = self.run_cli("sync", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "Already in sync")
+
+    def test_missing_template_is_an_error(self):
+        self.write("config.ini", "debug = true\n")
+        code, out, err = self.run_cli("sync")
+        self.assertEqual(code, 1)
+        self.assertIn("Could not find template", err)
+        self.assertEqual(out, "")
+        self.assertEqual(self.read(self.config), "debug = true\n")
+
+    def test_no_command_prints_help(self):
+        code, out, _ = self.run_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("sync", out)
 
 
 if __name__ == '__main__':

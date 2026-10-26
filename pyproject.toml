@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quick_ini"
-version = "4.1"
+version = "4.3"
 description = "A library for reading from and writing to .ini formatted files"
 readme = "README.md"
 license = "MIT"
@@ -24,6 +24,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
+
+[project.scripts]
+quick-ini = "quick_ini.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/olliez-mods/Quick-Ini"

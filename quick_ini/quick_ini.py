@@ -160,7 +160,7 @@ class QuickIni:
             raise
 
     @staticmethod
-    def sync_template(file_location:str, template:bool | str = True) -> bool:
+    def sync_template(file_location:str, template:bool | str = True, dry_run:bool = False) -> bool:
         """
         Brings a config file up to date with its template, keeping the values already set in the config.
         \nThe template decides which keys exist, their order, sections and comments. Keys the config doesn't have yet get
@@ -171,6 +171,7 @@ class QuickIni:
             file_location (str): The path of the config file.
             template (bool | str): True to use "<config>.template", skipped quietly if it doesn't exist.
                 Or the path of the template file, which must exist.
+            dry_run (bool): Work out the synced file without writing it (or a backup). The report has it as "text".
         Returns:
             bool: True if successfull, False otherwise
         Example:
@@ -266,7 +267,7 @@ class QuickIni:
         changed = new_text != old_text
         backup = None
 
-        if(changed):
+        if(changed and not dry_run):
             try:
                 if(old_text is not None):
                     backup = f"{path}.bak"
@@ -282,6 +283,7 @@ class QuickIni:
             "added": added if old_text is not None else [],
             "orphaned": orphaned,
             "backup": backup,
+            "text": new_text,
         }
         return True
 
@@ -292,12 +294,12 @@ class QuickIni:
         Return:
             dict[str, Any]: "created" (bool) the config was made from the template, "changed" (bool) the config was rewritten,
                 "added" (list) keys taken from the template, "orphaned" (list) keys kept that aren't in the template,
-                "backup" (str | None) the path of the backup of the previous config
+                "backup" (str | None) the path of the backup of the previous config, "text" (str) the synced file
         Example:
             >>> load_file("config.ini", template=True)
                 True
             >>> get_sync_report()
-                {'created': False, 'changed': True, 'added': ['database.timeout'], 'orphaned': [], 'backup': '/app/config.ini.bak'}
+                {'created': False, 'changed': True, 'added': ['database.timeout'], 'orphaned': [], 'backup': '/app/config.ini.bak', 'text': '...'}
         """
         if(QuickIni.sync_report is None):
             return None

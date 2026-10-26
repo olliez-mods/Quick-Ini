@@ -57,7 +57,19 @@ if report and report["added"]:
     print("New settings added to config.ini:", ", ".join(report["added"]))
 ```
 
-The report also has `created`, `changed`, `orphaned` (settings kept that aren't in the template) and `backup`. Use `QuickIni.sync_template("config.ini")` to sync without loading.
+The report also has `created`, `changed`, `orphaned` (settings kept that aren't in the template), `backup` and `text` (the synced file). Use `QuickIni.sync_template("config.ini")` to sync without loading, and `dry_run=True` to work out the changes without writing anything.
+
+### From the command line
+
+Installing QuickINI adds a `quick-ini` command (or run `python -m quick_ini`), so you can sync without starting your program:
+
+```bash
+quick-ini sync                     # config.ini with config.ini.template
+quick-ini sync --dry-run           # show what would change as a diff, write nothing (--diff works too)
+quick-ini sync --config app.ini --template defaults.ini
+```
+
+`--config` defaults to `config.ini` and `--template` to `<config>.template`. Unlike `template=True`, a missing template is an error here. It prints the settings added and kept, and exits with 1 on any error.
 
 ## File Format
 
